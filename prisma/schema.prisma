@@ -1,0 +1,373 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// ENUMS
+// ==========================================
+
+enum UserRole {
+  PENELITI        // Peneliti / Perguruan Tinggi / Lembaga Riset / LSM
+  STAF_BRIDA      // Gerbang 1: Verifikasi Awal & Anti-Duplikasi
+  REVIEWER_BRIDA  // Gerbang 2: Tim Teknis Uji Relevansi Kebutuhan OPD
+  KEPALA_BRIDA    // Gerbang 3: Pimpinan Tertinggi / Pemutus Mutlak Anggaran & Pengesah
+  OPD             // Perangkat Daerah / Dinas Penerima & Pelaksana Rekomendasi
+}
+
+enum ProposalStatus {
+  SUBMITTED               // Baru diajukan peneliti (SLA 14 hari kerja aktif)
+  REJECTED_DUPLICATE      // Ditolak Gerbang 1: Topik duplikat / sudah pernah dibuat
+  ADMIN_PASSED            // Lolos Gerbang 1: Diteruskan ke Tim Reviewer OPD
+  REJECTED_OPD_MISMATCH   // Ditolak Gerbang 2: Tidak relevan dengan kebutuhan/Renja OPD
+  REVIEW_PASSED           // Lolos Gerbang 2: Masuk meja Kepala BRIDA
+  REJECTED_BY_HEAD        // Ditolak Gerbang 3: Anggaran tidak cukup / kurang strategis
+  APPROVED                // Disetujui Mutlak Kepala BRIDA (Siap terbit KAK & Kontrak)
+  CONTRACT_ISSUED         // KAK, RKA & Draf Kontrak telah diterbitkan BRIDA
+  CONTRACT_SIGNED         // Peneliti telah upload ulang berkas kontrak sah (Riset Aktif)
+  RESULTS_SUBMITTED       // Peneliti upload Laporan Akhir Ilmiah & Policy Brief
+  FORWARDED_TO_OPD        // Naskah rekomendasi diteruskan ke OPD sasaran
+  COMPLETED               // OPD telah mengunggah bukti dokumen tindak lanjut
+}
+
+enum UrgencyLevel {
+  BIASA
+  SEGERA
+  SANGAT_SEGERA
+}
+
+// ==========================================
+// MODELS
+// ==========================================
+
+model User {
+  id              String         @id @default(uuid())
+  name            String
+  email           String         @unique
+  password        String
+  role            UserRole       @default(PENELITI)
+  institutionName String?        // Nama Kampus / Lembaga / Dinas OPD
+  phone           String?
+  nidnOrNip       String?        // NIDN untuk dosen, NIP untuk ASN
+  position        String?        // Jabatan
+  department      String?        // Bidang / Fakultas / Unit
+  isActive        Boolean        @default(true)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  // Relasi Proposal
+  proposalsSubmitted      ResearchProposal[]     @relation("ResearcherProposals")
+  proposalsAdminChecked   ResearchProposal[]     @relation("AdminGate1Checker")
+  proposalsOpdReviewed    ResearchProposal[]     @relation("OpdGate2Reviewer")
+  proposalsHeadApproved   ResearchProposal[]     @relation("HeadGate3Decider")
+
+  // Relasi Dokumen & Disposisi
+  kakSigned               KakDocument[]          @relation("KakSigner")
+  dispositionsReceived    OpdDisposition[]       @relation("OpdUserDispositions")
+  opdResponses            OpdActionResponse[]    @relation("OpdUserResponses")
+  agendasCreated          ResearchAgenda[]       @relation("CreatedAgendas")
+  auditLogs               AuditLog[]
+
+  @@map("users")
+}
+
+// Agenda Prioritas Riset Daerah (Call for Proposals)
+model ResearchAgenda {
+  id          String             @id @default(uuid())
+  year        Int                // Tahun Anggaran (misal: 2026)
+  title       String             // Judul Agenda / Isu Prioritas
+  description String             // Penjelasan kebutuhan riset
+  field       String             // Bidang: Sosial Budaya, Ekonomi, Tata Kelola, Infrastruktur
+  isOpen      Boolean            @default(true)
+  startDate   DateTime?
+  endDate     DateTime?
+  createdById String
+  createdBy   User               @relation("CreatedAgendas", fields: [createdById], references: [id])
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  proposals   ResearchProposal[]
+
+  @@map("research_agendas")
+}
+
+// Model Inti: Usulan Riset & Alur Berjenjang (3 Gerbang + SLA 14 Hari Kerja)
+model ResearchProposal {
+  id                      String         @id @default(uuid())
+  proposalNumber          String         @unique // Format: PROP-YYYY-XXXX
+  agendaId                String?        // Terhubung ke Agenda Riset Daerah
+  agenda                  ResearchAgenda? @relation(fields: [agendaId], references: [id], onDelete: SetNull)
+  researcherId            String
+  researcher              User           @relation("ResearcherProposals", fields: [researcherId], references: [id])
+
+  // Substansi Usulan
+  title                   String
+  focusArea               String         // Bidang Kajian
+  background              String         // Urgensi & Masalah Nyata di Daerah
+  methodology             String         // Metode & Ruang Lingkup
+  targetLocation          String         // Distrik/Kampung sasaran
+  estimatedDurationMonths Int            @default(3) // Lama pengerjaan (bulan)
+  proposedBudget          Float          // RAB Pengusul
+  proposalFileUrl         String         // File Proposal Lengkap (PDF)
+  coverLetterUrl          String?        // Surat Pengantar Dekan/Lembaga (PDF)
+  rabFileUrl              String?        // Berkas Rincian RAB sesuai SBM Daerah (PDF / Excel)
+  integrityPactUrl        String?        // Berkas Pakta Integritas Bermaterai Rp10.000 (PDF)
+
+  // Status & SLA Countdown (Tenggat 2 Minggu Hari Kerja = 14 Hari Kerja)
+  status                  ProposalStatus @default(SUBMITTED)
+  submittedAt             DateTime       @default(now())
+  slaDeadline             DateTime       // Dihitung otomatis: submittedAt + 14 hari kerja
+
+  // -------------------------------------------------------------
+  // GERBANG 1: Verifikasi Awal & Anti-Duplikasi (Role: STAF_BRIDA)
+  // -------------------------------------------------------------
+  adminCheckedById          String?
+  adminCheckedBy            User?          @relation("AdminGate1Checker", fields: [adminCheckedById], references: [id])
+  adminCheckSuratPengantar  Boolean?       @default(false) // 1. Keabsahan tanda tangan pimpinan institusi & stempel
+  adminCheckSusunanTim      Boolean?       @default(false) // 2. Kualifikasi ketua tim (NIDN/NIP) & susunan periset
+  adminCheckKesesuaianRab   Boolean?       @default(false) // 3. Kesesuaian komponen RAB dengan SBM Pemda
+  adminCheckPaktaIntegritas Boolean?       @default(false) // 4. Keabsahan pakta integritas bermaterai Rp10.000
+  adminDuplicateStatus      String?        // UNIQUE | SIMILAR_EXIST | DUPLICATE
+  adminDuplicateCheck       Boolean?       // true: Lolos / Unik, false: Terindikasi Duplikat
+  adminPreviousResearchRef  String?        // Nomor register / judul kajian litbang terdahulu jika ada irisan
+  adminRpjmdThematicTag     String?        // Isu makro RPJMD Pemda
+  adminCrossCuttingOpdTags  String?        // Daftar OPD lintas sektor terkait isu penelitian
+  adminDuplicateNotes       String?        // Catatan pertimbangan staf litbang
+  adminCheckedAt            DateTime?
+
+  // -------------------------------------------------------------
+  // GERBANG 2: Uji Relevansi Kebutuhan OPD & Kualitas Ilmiah (Role: REVIEWER_BRIDA)
+  // -------------------------------------------------------------
+  opdReviewerId             String?
+  opdReviewer               User?          @relation("OpdGate2Reviewer", fields: [opdReviewerId], references: [id])
+  scoreScientificQuality    Float?         // Kriteria 1: Kualitas ilmiah & metodologi (Bobot 25%)
+  scoreOpdRelevance         Float?         // Kriteria 2: Keselarasan Renja OPD & IKU (Bobot 35%)
+  scorePolicyApplicability  Float?         // Kriteria 3: Kemudahan diadopsi jadi regulasi/Renja (Bobot 25%)
+  scoreBudgetFeasibility    Float?         // Kriteria 4: Kewajaran biaya RAB & rasionalitas jadwal (Bobot 15%)
+  opdRelevanceScore         Float?         // Skor Akhir Tertimbang: (K1*0.25)+(K2*0.35)+(K3*0.25)+(K4*0.15)
+  reviewerRecommendation    String?        // RECOMMENDED | NOT_RECOMMENDED
+  opdRelevanceNotes         String?        // Catatan kritis penajaman ruang lingkup & saran teknis
+  targetOpdNames            String?        // Rekomendasi nama-nama OPD penerima manfaat definitif
+  opdReviewedAt             DateTime?
+
+  // -------------------------------------------------------------
+  // GERBANG 3: Keputusan Mutlak Kepala BRIDA (Role: KEPALA_BRIDA)
+  // Sesuai Dokumen Blueprint SIM-RIDA Bab 4.4
+  // -------------------------------------------------------------
+  headApprovedById        String?
+  headApprovedBy          User?          @relation("HeadGate3Decider", fields: [headApprovedById], references: [id])
+  headSubActivityDpa      String?        // 1. Nama Sub-Kegiatan DPA BRIDA pengampu riset
+  headBudgetAccountCode   String?        // 2. Kode Rekening Anggaran Belanja Jasa Riset
+  headBudgetFeasibility   Boolean?       // 3. Konfirmasi ketersediaan kas pada DPA BRIDA berjalan
+  headApprovedBudget      Float?         // 4. Pagu anggaran definitif yang disetujui Kepala BRIDA (Rp)
+  headStrategicBenefit    String?        // 5. Uraian kemanfaatan strategis hasil riset bagi daerah (min 50 char)
+  headDecisionNotes       String?        // 6. Instruksi dan arahan tertulis pimpinan BRIDA (min 30 char)
+  headDecidedAt           DateTime?
+
+  // -------------------------------------------------------------
+  // DOKUMEN KAK, RKA & KONTRAK
+  // -------------------------------------------------------------
+  kakDocument             KakDocument?
+  contractDocument        ContractDocument?
+
+  // -------------------------------------------------------------
+  // LUARAN RISET & TINDAK LANJUT OPD
+  // -------------------------------------------------------------
+  researchResult          ResearchResult?
+  policyRecommendations  PolicyRecommendation[]
+  dispositions            OpdDisposition[]
+  auditLogs               AuditLog[]
+
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+
+  @@map("research_proposals")
+}
+
+// Dokumen KAK & RKA Definitif (Blueprint Bab 4.5)
+model KakDocument {
+  id              String          @id @default(uuid())
+  proposalId      String          @unique
+  proposal        ResearchProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  kakNumber       String          @unique // 1. Nomor Register KAK resmi BRIDA
+  rkaNumber       String?         // 3. Nomor DPA / RKA Dokumen Anggaran Riset
+  title           String
+  background      String
+  objective       String          // Maksud dan Tujuan
+  scope           String          // Ruang Lingkup Kajian
+  deliverables    String          // Target Luaran Ilmiah & Rekomendasi
+  allocatedBudget Float           // 7. Pagu Alokasi RKA / Nilai Kontrak Definitif (Rp)
+  startDate       DateTime        // 8. Tanggal Mulai Pelaksanaan Riset
+  endDate         DateTime        // 9. Batas Akhir Penyerahan Hasil
+  pdfFileUrl      String?         // 2. Berkas Dokumen KAK Definitif resmi BRIDA (PDF)
+  rkaFileUrl      String?         // 4. Berkas RKA / Rincian Belanja DPA Riset resmi BRIDA (PDF)
+  signedById      String?
+  signer          User?           @relation("KakSigner", fields: [signedById], references: [id])
+  issuedAt        DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@map("kak_documents")
+}
+
+// Dokumen Kontrak & Bukti Tanda Tangan Peneliti
+model ContractDocument {
+  id                 String          @id @default(uuid())
+  proposalId         String          @unique
+  proposal           ResearchProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  contractNumber     String          // Nomor Perjanjian Kerjasama / SPK
+  contractValue      Float           // Nilai Kontrak (Rp)
+  startDate          DateTime
+  endDate            DateTime
+  
+  // Draf Formulir Kontrak dari BRIDA
+  draftContractUrl   String?
+  
+  // File Kontrak Sah yang Diunggah Ulang oleh Peneliti (Bertandatangan) - Blueprint Bab 4.5
+  signedContractUrl  String?         // 1. Scan Berkas Kontrak PKS Sah bertandatangan materai Rp10.000
+  statementLetterUrl String?         // 2. Surat kesanggupan penyelesaian output tepat waktu (PDF)
+  researcherNotes    String?         // 3. Catatan kesiapan mobilisasi tim peneliti ke lapangan
+  signedUploadedAt   DateTime?
+  isSigned           Boolean         @default(false)
+
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  @@map("contract_documents")
+}
+
+// Luaran Hasil Kajian Ilmiah & Naskah Akademik
+model ResearchResult {
+  id                   String          @id @default(uuid())
+  proposalId           String          @unique
+  proposal             ResearchProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  finalTitle           String
+  abstract             String          // Ringkasan Eksekutif
+  finalReportFileUrl   String          // Berkas Laporan Lengkap Ilmiah (PDF)
+  academicPaperFileUrl String?         // Naskah Akademik / Draf Regulasi (PDF/DOC)
+  policyBriefFileUrl   String?         // Naskah Policy Brief Ringkas (PDF)
+  submittedAt          DateTime        @default(now())
+
+  recommendations      PolicyRecommendation[]
+
+  @@map("research_results")
+}
+
+// Rekomendasi Kebijakan yang Akan Didistribusikan ke OPD
+model PolicyRecommendation {
+  id                  String             @id @default(uuid())
+  proposalId          String
+  proposal            ResearchProposal   @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  resultId            String
+  result              ResearchResult     @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  recommendationCode  String             // e.g. REK-01
+  title               String
+  sector              String             // Sektor: Kesehatan, Pendidikan, Perikanan, dll.
+  targetOpdName       String             // Nama OPD Tujuan
+  description         String             // Uraian rekomendasi konkret
+  expectedOutcome     String             // Manfaat yang diharapkan
+  createdAt           DateTime           @default(now())
+
+  opdResponses        OpdActionResponse[]
+
+  @@map("policy_recommendations")
+}
+
+// Disposisi Forwarding ke OPD Sasaran
+model OpdDisposition {
+  id                    String             @id @default(uuid())
+  proposalId            String
+  proposal              ResearchProposal   @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  opdUserId             String
+  opdUser               User               @relation("OpdUserDispositions", fields: [opdUserId], references: [id])
+  dispositionNumber     String             // Nomor Surat Pengantar BRIDA
+  urgency               UrgencyLevel       @default(SEGERA)
+  notes                 String?            // Arahan Kepala BRIDA untuk Kepala Dinas
+  responseDeadline      DateTime?          // Batas Waktu Respon
+  status                String             @default("SENT") // SENT, RESPONDED
+  forwardedAt           DateTime           @default(now())
+
+  responses             OpdActionResponse[]
+
+  @@map("opd_dispositions")
+}
+
+// Bukti Tindak Lanjut oleh OPD (Upload File & Rencana Aksi)
+model OpdActionResponse {
+  id                        String               @id @default(uuid())
+  dispositionId             String
+  disposition               OpdDisposition       @relation(fields: [dispositionId], references: [id], onDelete: Cascade)
+  recommendationId          String?
+  recommendation            PolicyRecommendation? @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  opdUserId                 String
+  opdUser                   User                 @relation("OpdUserResponses", fields: [opdUserId], references: [id])
+  
+  actionPlanDetails         String               // Penjelasan langkah tindak lanjut OPD
+  policyForm                String?              // Renja/RKPD, Perda, Perbup, SK Bupati, SOP Dinas
+  targetImplementationYear  Int?                 // Tahun Realisasi
+  proofFileUrl              String               // BERKAS BUKTI TINDAK LANJUT RESMI OPD (PDF)
+  respondedAt               DateTime             @default(now())
+
+  @@map("opd_action_responses")
+}
+
+// Audit Trail Log untuk Pelacakan Riwayat Transaksi
+model AuditLog {
+  id         String            @id @default(uuid())
+  userId     String?
+  user       User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  proposalId String?
+  proposal   ResearchProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  action     String            // e.g. "GATE1_PASSED", "HEAD_APPROVED", "CONTRACT_SIGNED"
+  details    String?
+  createdAt  DateTime          @default(now())
+
+  @@map("audit_logs")
+}
+
+// Master Data: Bidang Kajian Riset & Inovasi Daerah (Standar Nasional BRIDA)
+model ResearchField {
+  id          String   @id @default(uuid())
+  code        String   @unique // Misal: BKD-01, BKD-02, dst
+  name        String   // Nama Bidang Kajian
+  description String?  // Deskripsi cakupan fokus kajian
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("research_fields")
+}
+
+// Master Data: Prioritas Tematik RPJMD Daerah
+model MasterRpjmd {
+  id          String   @id @default(uuid())
+  code        String   @unique // Misal: RPJMD-01, RPJMD-02
+  name        String   // Nama Isu Tematik Makro RPJMD
+  description String?  // Deskripsi prioritas pembangunan
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("master_rpjmd")
+}
+
+// Master Data: Perangkat Daerah (OPD Lintas Sektor)
+model MasterOpd {
+  id          String   @id @default(uuid())
+  code        String   @unique // Misal: OPD-01, OPD-02
+  name        String   // Nama Lengkap OPD
+  shortName   String   // Nama Singkatan (BAPPEDA, DINKES, dll)
+  category    String   // Rumpun: PERENCANAAN, PEREKONOMIAN, SOSIAL_SDM, INFRASTRUKTUR
+  description String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("master_opds")
+}
