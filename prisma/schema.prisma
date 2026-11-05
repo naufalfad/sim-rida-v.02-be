@@ -30,6 +30,8 @@ enum ProposalStatus {
   CONTRACT_ISSUED         // KAK, RKA & Draf Kontrak telah diterbitkan BRIDA
   CONTRACT_SIGNED         // Peneliti telah upload ulang berkas kontrak sah (Riset Aktif)
   RESULTS_SUBMITTED       // Peneliti upload Laporan Akhir Ilmiah & Policy Brief
+  RESULTS_REVISION        // Naskah diminta revisi oleh Kepala BRIDA (Kas Belum Cair)
+  RESULTS_APPROVED        // Naskah disahkan Kepala BRIDA (Kas Terserap Riil 100%)
   FORWARDED_TO_OPD        // Naskah rekomendasi diteruskan ke OPD sasaran
   COMPLETED               // OPD telah mengunggah bukti dokumen tindak lanjut
 }
@@ -38,6 +40,11 @@ enum UrgencyLevel {
   BIASA
   SEGERA
   SANGAT_SEGERA
+}
+
+enum SubmissionType {
+  INITIATIVE          // Pengajuan Inisiatif Mandiri Peneliti (Bottom-Up / Bebas)
+  AGENDA_COMPETITIVE  // Pengajuan Kompetitif Agenda Riset Daerah (Top-Down / Call for Proposals BRIDA)
 }
 
 // ==========================================
@@ -70,27 +77,35 @@ model User {
   dispositionsReceived    OpdDisposition[]       @relation("OpdUserDispositions")
   opdResponses            OpdActionResponse[]    @relation("OpdUserResponses")
   agendasCreated          ResearchAgenda[]       @relation("CreatedAgendas")
+  opdNeedsSubmitted       OpdResearchNeed[]      @relation("OpdNeedsSubmitted")
+  needsCurated            OpdResearchNeed[]      @relation("NeedCurator")
+  fiscalBudgetsCreated    FiscalBudgetCap[]      @relation("FiscalBudgetCreator")
   auditLogs               AuditLog[]
+  notifications           Notification[]         @relation("UserNotifications")
+  masterOpds              MasterOpd[]            @relation("MasterOpdUser")
 
   @@map("users")
 }
 
 // Agenda Prioritas Riset Daerah (Call for Proposals)
 model ResearchAgenda {
-  id          String             @id @default(uuid())
-  year        Int                // Tahun Anggaran (misal: 2026)
-  title       String             // Judul Agenda / Isu Prioritas
-  description String             // Penjelasan kebutuhan riset
-  field       String             // Bidang: Sosial Budaya, Ekonomi, Tata Kelola, Infrastruktur
-  isOpen      Boolean            @default(true)
-  startDate   DateTime?
-  endDate     DateTime?
-  createdById String
-  createdBy   User               @relation("CreatedAgendas", fields: [createdById], references: [id])
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  id                    String             @id @default(uuid())
+  originNeedId          String?            @unique
+  originNeed            OpdResearchNeed?   @relation("NeedToAgenda", fields: [originNeedId], references: [id], onDelete: SetNull)
+  year                  Int                // Tahun Anggaran (misal: 2026)
+  title                 String             // Judul Agenda / Isu Prioritas
+  description           String             // Penjelasan kebutuhan riset
+  field                 String             // Bidang: Sosial Budaya, Ekonomi, Tata Kelola, Infrastruktur
+  allocatedBudgetCeiling Float?            // Pagu maksimal belanja riset DPA BRIDA (Rp)
+  isOpen                Boolean            @default(true)
+  startDate             DateTime?
+  endDate               DateTime?
+  createdById           String
+  createdBy             User               @relation("CreatedAgendas", fields: [createdById], references: [id])
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
 
-  proposals   ResearchProposal[]
+  proposals             ResearchProposal[]
 
   @@map("research_agendas")
 }
@@ -119,6 +134,7 @@ model ResearchProposal {
 
   // Status & SLA Countdown (Tenggat 2 Minggu Hari Kerja = 14 Hari Kerja)
   status                  ProposalStatus @default(SUBMITTED)
+  submissionType          SubmissionType @default(INITIATIVE)
   submittedAt             DateTime       @default(now())
   slaDeadline             DateTime       // Dihitung otomatis: submittedAt + 14 hari kerja
 
@@ -139,6 +155,10 @@ model ResearchProposal {
   adminDuplicateNotes       String?        // Catatan pertimbangan staf litbang
   adminCheckedAt            DateTime?
 
+  // Asistensi AI Copilot Gerbang 1 (Token-Efficient Caching)
+  aiGate1Analysis           Json?          // Hasil Analisis AI Gerbang 1 (Anti-duplikasi semantik, tagging RPJMD & OPD, ulasan)
+  aiGate1AnalyzedAt         DateTime?
+
   // -------------------------------------------------------------
   // GERBANG 2: Uji Relevansi Kebutuhan OPD & Kualitas Ilmiah (Role: REVIEWER_BRIDA)
   // -------------------------------------------------------------
@@ -153,6 +173,10 @@ model ResearchProposal {
   opdRelevanceNotes         String?        // Catatan kritis penajaman ruang lingkup & saran teknis
   targetOpdNames            String?        // Rekomendasi nama-nama OPD penerima manfaat definitif
   opdReviewedAt             DateTime?
+
+  // Asistensi AI Copilot Gerbang 2 (Reviewer Rubric & Competitive Ranking)
+  aiGate2Analysis           Json?          // Hasil Analisis AI Gerbang 2 (Skor 4 Pilar K1-K4, catatan kritis, ranking komparatif)
+  aiGate2AnalyzedAt         DateTime?
 
   // -------------------------------------------------------------
   // GERBANG 3: Keputusan Mutlak Kepala BRIDA (Role: KEPALA_BRIDA)
@@ -181,10 +205,13 @@ model ResearchProposal {
   policyRecommendations  PolicyRecommendation[]
   dispositions            OpdDisposition[]
   auditLogs               AuditLog[]
+  fastTrackAdoptedNeeds   OpdResearchNeed[]      @relation("FastTrackAssignedProposal")
 
   createdAt               DateTime       @default(now())
   updatedAt               DateTime       @updatedAt
 
+  @@index([submissionType])
+  @@index([agendaId])
   @@map("research_proposals")
 }
 
@@ -201,8 +228,6 @@ model KakDocument {
   scope           String          // Ruang Lingkup Kajian
   deliverables    String          // Target Luaran Ilmiah & Rekomendasi
   allocatedBudget Float           // 7. Pagu Alokasi RKA / Nilai Kontrak Definitif (Rp)
-  startDate       DateTime        // 8. Tanggal Mulai Pelaksanaan Riset
-  endDate         DateTime        // 9. Batas Akhir Penyerahan Hasil
   pdfFileUrl      String?         // 2. Berkas Dokumen KAK Definitif resmi BRIDA (PDF)
   rkaFileUrl      String?         // 4. Berkas RKA / Rincian Belanja DPA Riset resmi BRIDA (PDF)
   signedById      String?
@@ -220,8 +245,6 @@ model ContractDocument {
   proposal           ResearchProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
   contractNumber     String          // Nomor Perjanjian Kerjasama / SPK
   contractValue      Float           // Nilai Kontrak (Rp)
-  startDate          DateTime
-  endDate            DateTime
   
   // Draf Formulir Kontrak dari BRIDA
   draftContractUrl   String?
@@ -250,6 +273,13 @@ model ResearchResult {
   academicPaperFileUrl String?         // Naskah Akademik / Draf Regulasi (PDF/DOC)
   policyBriefFileUrl   String?         // Naskah Policy Brief Ringkas (PDF)
   submittedAt          DateTime        @default(now())
+
+  // Pengesahan & Uji Kelayakan Mutu Naskah Akademik oleh Kepala BRIDA
+  isApprovedByHead     Boolean         @default(false)
+  headApprovalNotes    String?
+  headApprovedAt       DateTime?
+  revisionNotes        String?
+  revisionCount        Int             @default(0)
 
   recommendations      PolicyRecommendation[]
 
@@ -366,8 +396,141 @@ model MasterOpd {
   description String?
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
+  userId      String?
+  user        User?    @relation("MasterOpdUser", fields: [userId], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@map("master_opds")
+}
+
+// Master Data: Instrumen Bentuk Regulasi & Kebijakan Daerah (Standar UU 12/2011 & Permendagri 120/2018)
+model MasterPolicyInstrument {
+  id          String   @id @default(uuid())
+  code        String   @unique // Misal: REG-01, REG-02
+  name        String   // Nama Produk Regulasi / Kebijakan
+  category    String   // REGULASI_DAERAH, DOKUMEN_PERENCANAAN, SOP_INTERNAL, PEDOMAN_TEKNIS
+  description String?  // Hierarki hukum & kewenangan penetapan
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("master_policy_instruments")
+}
+
+// Master Data: Sub-Kegiatan DPA & Kode Rekening Belanja BRIDA (Standar SIPD Permendagri 90/2019)
+model MasterDpaAccount {
+  id                String   @id @default(uuid())
+  subActivityCode   String   // Misal: 1.04.01.2.02.01
+  subActivityName   String   // Uraian Sub-Kegiatan DPA BRIDA
+  budgetAccountCode String   // Misal: 5.1.02.02.01.0026
+  budgetAccountName String   // Uraian Akun Belanja (Jasa Tenaga Ahli Riset, dsb)
+  fiscalYear        Int      @default(2027)
+  isActive          Boolean  @default(true)
+  sortOrder         Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("master_dpa_accounts")
+}
+
+// -------------------------------------------------------------
+// MODUL HULU: PENJARINGAN KEBUTUHAN RISET OPD & FAST-TRACK
+// -------------------------------------------------------------
+model OpdResearchNeed {
+  id                    String             @id @default(uuid())
+  needCode              String             @unique // Format: NEED-YYYY-XXXX
+  opdUserId             String
+  opdUser               User               @relation("OpdNeedsSubmitted", fields: [opdUserId], references: [id], onDelete: Cascade)
+  
+  // 12 Field Usulan OPD (Blueprint Bab 4.0.1)
+  title                 String
+  thematicArea          String             // Bidang Tematik
+  urgencyBackground     String             // Kendala riil & urgensi solusi
+  expectedOutputs       String             // JSON string / nama luaran (Perda, Perbup, SOP, dll)
+  targetRenjaIku        String             // Sasaran Renja & IKU
+  targetLocation        String             // Lokus wilayah masalah
+  dataReadiness         Boolean            @default(true) // Kesiapan dinas memfasilitasi data
+  dataAvailabilityNotes String?            // Rincian data yang siap diakses
+  targetYear            Int                // Tahun realisasi (contoh: 2027)
+  picName               String             // Nama PIC Teknis dinas
+  picPhone              String             // Nomor HP/WA PIC
+  supportDocUrl         String?            // Dokumen Kerangka Acuan / Pengantar (PDF)
+
+  // Status Pelacakan Berjenjang bagi OPD (7 Status)
+  // SUBMITTED | IN_REVIEW | CLUSTERED_MULTI_OPD | MATCHED_EXISTING_RESEARCH | CONVERTED_TO_AGENDA | REVISION_REQUESTED | REJECTED
+  status                String             @default("SUBMITTED")
+  submittedAt           DateTime           @default(now())
+
+  // Hasil Telaah & Kurasi BRIDA (Form 4.0.2)
+  curatorId             String?
+  curatorUser           User?              @relation("NeedCurator", fields: [curatorId], references: [id], onDelete: SetNull)
+  scientificFeasibility Boolean?           @default(false)
+  rpjmdAlignment        String?
+  priorityLevel         String?            // SANGAT_MENDESAK | STRATEGIS | RENDAH
+  curatorNotes          String?
+  reviewedAt            DateTime?
+
+  // Konsolidasi Multi-OPD (Clustering Usulan Serupa - Zero Rejection)
+  parentNeedId          String?
+  parentNeed            OpdResearchNeed?   @relation("NeedClustering", fields: [parentNeedId], references: [id], onDelete: SetNull)
+  clusteredNeeds        OpdResearchNeed[]  @relation("NeedClustering")
+
+  // Jalur Cepat (Fast-Track Assignment Naskah Terdahulu)
+  matchedProposalId     String?
+  matchedProposal       ResearchProposal?  @relation("FastTrackAssignedProposal", fields: [matchedProposalId], references: [id], onDelete: SetNull)
+
+  // Relasi jika diterbitkan menjadi Agenda Riset Baru
+  resultingAgenda       ResearchAgenda?    @relation("NeedToAgenda")
+
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  @@map("opd_research_needs")
+}
+
+// -------------------------------------------------------------
+// MODUL FISKAL: PAGU KAS INDUK BELANJA RISET BRIDA (APBD / APBN / BRIN)
+// -------------------------------------------------------------
+model FiscalBudgetCap {
+  id                    String    @id @default(uuid())
+  fiscalYear            Int       @unique // Tahun Anggaran (misal 2026)
+  fundingSource         String    @default("APBD_MURNI") // APBD_MURNI | APBD_PERUBAHAN | APBN_TRANSFER | HIBAH_BRIN | CAMPURAN
+  totalBudgetCap        Float     // Total Pagu Kas Gelondongan Belanja Riset Tahunan (Rp)
+  agendaAllocation      Float     // Alokasi Khusus Agenda Riset Daerah (Rp)
+  initiativeAllocation  Float     // Alokasi Khusus Usulan Inisiatif Mandiri (Rp)
+  notes                 String?   // Catatan Kebijakan Fiskal Kepala BRIDA
+  createdById           String?
+  createdBy             User?     @relation("FiscalBudgetCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("fiscal_budget_caps")
+}
+
+// -------------------------------------------------------------
+// MODUL NOTIFIKASI LONCENG SISTEM (HEADER NOTIFICATIONS)
+// -------------------------------------------------------------
+enum NotificationType {
+  INFO
+  ACTION_REQUIRED
+  SUCCESS
+  WARNING
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      NotificationType @default(INFO)
+  link      String?          // URL tujuan deep link ketika notifikasi diklik
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@index([userId, isRead])
+  @@map("notifications")
 }

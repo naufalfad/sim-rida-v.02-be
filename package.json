@@ -1,7 +1,7 @@
 {
   "name": "simrida-be",
   "version": "2.0.0",
-  "description": "Backend API SIM-RIDA Generasi 2.0 (BRIDA - Peneliti - OPD)",
+  "description": "Backend API SIMRIDA Generasi 2.0 (BRIDA - Peneliti - OPD)",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -31,6 +31,8 @@
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.11.0",
     "multer": "^2.3.0",
+    "pdf-parse": "^2.4.5",
+    "xlsx": "^0.18.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -41,4 +43,3 @@
     "seed": "node prisma/seed.js"
   }
 }
-

@@ -5,7 +5,7 @@ const fs = require('fs');
 const uploadBaseDir = path.join(__dirname, '..', '..', process.env.UPLOAD_DIR || 'uploads');
 
 // Ensure subdirectories exist
-const subDirs = ['proposals', 'contracts', 'milestones', 'reports', 'dispositions', 'responses'];
+const subDirs = ['proposals', 'contracts', 'milestones', 'reports', 'dispositions', 'responses', 'needs'];
 subDirs.forEach((sub) => {
   const dir = path.join(uploadBaseDir, sub);
   if (!fs.existsSync(dir)) {
@@ -34,6 +34,8 @@ const storage = multer.diskStorage({
       sub = 'dispositions';
     } else if (fn.includes('response') || fn.includes('proof')) {
       sub = 'responses';
+    } else if (fn.includes('need') || fn.includes('support')) {
+      sub = 'needs';
     }
 
     const dest = path.join(uploadBaseDir, sub);

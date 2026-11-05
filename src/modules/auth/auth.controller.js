@@ -171,7 +171,15 @@ const getOpdList = async (req, res) => {
         name: true,
         email: true,
         institutionName: true,
-        position: true
+        position: true,
+        masterOpds: {
+          select: {
+            code: true,
+            name: true,
+            shortName: true,
+            category: true
+          }
+        }
       },
       orderBy: { name: 'asc' }
     });

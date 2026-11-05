@@ -10,6 +10,9 @@ const authRoutes = require('./modules/auth/auth.routes');
 const agendaRoutes = require('./modules/agendas/agenda.routes');
 const proposalRoutes = require('./modules/proposals/proposal.routes');
 const masterRoutes = require('./modules/master/master.routes');
+const opdNeedRoutes = require('./modules/opd-needs/opd-need.routes');
+const fiscalRoutes = require('./modules/fiscal/fiscal.routes');
+const notificationRoutes = require('./modules/notifications/notification.routes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -59,7 +62,7 @@ app.use('/uploads', express.static(uploadDir));
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    system: 'SIM-RIDA v2.0 API',
+    system: 'SIMRIDA v2.0 API',
     timestamp: new Date().toISOString()
   });
 });
@@ -69,6 +72,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/agendas', agendaRoutes);
 app.use('/api/proposals', proposalRoutes);
 app.use('/api/master', masterRoutes);
+app.use('/api/opd-needs', opdNeedRoutes);
+app.use('/api/fiscal-budgets', fiscalRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // 404 Handler
 app.use((req, res) => {
@@ -89,7 +95,7 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`===============================================`);
-  console.log(`🚀 SIM-RIDA v2.0 Backend running on port ${PORT}`);
+  console.log(`[INFO] SIMRIDA v2.0 Backend running on port ${PORT}`);
   console.log(`   Database: PostgreSQL (simrida2_db)`);
   console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`===============================================`);
